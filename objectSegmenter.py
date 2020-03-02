@@ -34,12 +34,14 @@ calibrating = True
 pixelHeight = 480
 pixelWidth = 848
 
-numCalibrationFrames = 30
+
+numFramesToSkip = 30
+numCalibrationFrames = 50
 
 
 
 kernel = np.ones((3,3),np.uint8)
-kernel2 = np.ones((8,8),np.uint8)
+kernel2 = np.ones((2,2),np.uint8)
 kernel3 = np.ones((3,3),np.uint8)
 
 config.enable_stream(rs.stream.depth, pixelWidth, pixelHeight, rs.format.z16, 30)
@@ -56,6 +58,7 @@ color_sensor = device.query_sensors()[1]
 color_sensor.set_option(rs.option.enable_auto_exposure, 0)
 color_sensor.set_option(rs.option.enable_auto_white_balance, 0)
 color_sensor.set_option(rs.option.exposure, 180)
+color_sensor.set_option(rs.option.sharpness, 120)
 print(color_sensor.get_supported_options())
 
 depth_sensor.set_option(rs.option.enable_auto_exposure, 0)
@@ -72,21 +75,45 @@ window1Name = 'input image (purposefully blurred)'
 window2Name = 'Depth difference'
 window3Name = 'RGB difference'
 window4Name = "RGB and Depth difference union"
+window5Name = "HSV difference"
+window6Name = "test"
 
 color_difference_threshold_darker = 150
 
 alpha_slider_max = 100
 title_window = 'RGB Darker threshold'
 
+def empty(z):
+	pass
 #def on_trackbar(val):
 #	alpha = val / alpha_slider_max
 #	beta = ( 1.0 - alpha )
-#	color_difference_threshold_darker = alpha*200
-#	print(color_difference_threshold_darker)
+	#color_difference_threshold_darker = alpha*200
+	#print(color_difference_threshold_darker)
+v_difference_threshold_darker_default = 35
+v_difference_threshold_lighter_default = 30
+color_difference_threshold_lighter_default = 30
+color_difference_threshold_darker_default = 53
 
-#trackbar_name = 'Alpha x %d' % alpha_slider_max
-#cv2.namedWindow('test')
-#cv2.createTrackbar(trackbar_name, 'test' , 0, alpha_slider_max, on_trackbar)
+def recalibrate(newVal):
+	framesCaptured = 0
+	calibrating = True
+
+	#cv2.setTrackbarPos('Recalibrate', 'controls', 0)
+
+
+
+cv2.namedWindow('controls')
+cv2.createTrackbar('v lighter difference threshold', 'controls' , 0, 255, empty)
+cv2.createTrackbar('v darker difference threshold', 'controls' , 0, 255, empty)
+cv2.createTrackbar('RGB lighter difference threshold', 'controls' , 0, 255, empty)
+cv2.createTrackbar('RGB darker difference threshold', 'controls' , 0, 255, empty)
+cv2.createTrackbar('Recalibrate', 'controls' , 0, 1, empty)
+
+cv2.setTrackbarPos('v darker difference threshold', 'controls', v_difference_threshold_darker_default)
+cv2.setTrackbarPos('v lighter difference threshold', 'controls', v_difference_threshold_lighter_default)
+cv2.setTrackbarPos('RGB lighter difference threshold', 'controls', color_difference_threshold_lighter_default)
+cv2.setTrackbarPos('RGB darker difference threshold', 'controls', color_difference_threshold_darker_default)
 
 # We will be removing the background of objects more than
 # clipping_distance_in_meters meters away
@@ -116,6 +143,12 @@ cv2.moveWindow(window3Name,1000,20)
 cv2.namedWindow(window4Name, cv2.WINDOW_AUTOSIZE)
 cv2.moveWindow(window4Name,1000,800)
 
+cv2.namedWindow(window5Name, cv2.WINDOW_AUTOSIZE)
+cv2.moveWindow(window5Name,1000,1300)
+
+#cv2.namedWindow(window6Name, cv2.WINDOW_AUTOSIZE)
+#cv2.moveWindow(window6Name,0,1400)
+
 #cv2.namedWindow('thresh of unculled color image', cv2.WINDOW_AUTOSIZE)
 #cv2.moveWindow('thresh of unculled color image',1500,20)
 #cv2.namedWindow('thresh of culled color image', cv2.WINDOW_AUTOSIZE)
@@ -125,6 +158,7 @@ cv2.moveWindow(window4Name,1000,800)
 
 
 calibration_image = cv2.imread('calibrating.png',1)
+ignoring_image = cv2.imread('ignoring.png',1)
 
 
 framesCaptured = 0
@@ -150,6 +184,7 @@ try:
 		aligned_depth_frame = aligned_frames.get_depth_frame()
 		color_frame = aligned_frames.get_color_frame()
 
+
         # Validate that both frames are valid
 		if not aligned_depth_frame or not color_frame:
 			continue
@@ -157,40 +192,61 @@ try:
 		#get depth/color data and put into a numpy arrays
 		depth_image = np.asanyarray(aligned_depth_frame.get_data())
 		color_image = np.asanyarray(color_frame.get_data())
+		hsv_image = cv2.cvtColor(color_image,cv2.COLOR_BGR2HSV)
 		#color_image_blurred = cv2.blur(color_image,(3,3))
 		b,g,r = cv2.split(color_image)
+		h,s,v = cv2.split(hsv_image)
 
-
+		calButton = cv2.getTrackbarPos('Recalibrate','controls')
+		if calButton == 1:
+			framesCaptured = False
+			calibrating = True
+			cv2.setTrackbarPos('Recalibrate','controls',0)
 
 
 		#if we haven't seen an image yet
 		if(calibrating):
-			if framesCaptured <20:
+			#print("calibrating")
+			if framesCaptured < numFramesToSkip:
 				framesCaptured +=1
-			elif framesCaptured ==20:
+			elif framesCaptured ==numFramesToSkip:
 				firstDepthFrame = depth_image.astype(np.uint32)
 				numFramesNotZeroForPixel = np.where(depth_image > 0,1,0)
 				bInitial,gInitial,rInitial = b,g,r
+				hInitial,sInitial,vInitial = h,s,v
 				framesCaptured +=1
-			elif framesCaptured < 40:
+			elif framesCaptured < numFramesToSkip+numCalibrationFrames:
 				firstDepthFrame = np.add(firstDepthFrame.astype(np.uint32),depth_image.astype(np.uint32))
 				bInitial = np.add(bInitial.astype(np.uint32),b.astype(np.uint32))
 				gInitial = np.add(gInitial.astype(np.uint32),g.astype(np.uint32))
 				rInitial = np.add(rInitial.astype(np.uint32),r.astype(np.uint32))
+				hInitial = np.add(hInitial.astype(np.uint32),h.astype(np.uint32))
+				sInitial = np.add(sInitial.astype(np.uint32),s.astype(np.uint32))
+				vInitial = np.add(vInitial.astype(np.uint32),v.astype(np.uint32))
 				numFramesNotZeroForPixel = np.where(depth_image > 0,numFramesNotZeroForPixel+1,numFramesNotZeroForPixel)
 				framesCaptured +=1
 			else:
 				averageDepthFrame = np.divide(firstDepthFrame,np.where(numFramesNotZeroForPixel>0,numFramesNotZeroForPixel,1))
 				#print("b Initial before division",bInitial[0][0])
-				bInitial = np.divide(bInitial,20).astype(np.uint8)
-				gInitial = np.divide(gInitial,20).astype(np.uint8)
-				rInitial = np.divide(rInitial,20).astype(np.uint8)
+				averageDepth = np.average(averageDepthFrame)
+				averageDepthInMeters = depth_scale*averageDepth
+				bInitial = np.divide(bInitial,numCalibrationFrames).astype(np.uint8)
+				gInitial = np.divide(gInitial,numCalibrationFrames).astype(np.uint8)
+				rInitial = np.divide(rInitial,numCalibrationFrames).astype(np.uint8)
+				hInitial = np.divide(hInitial,numCalibrationFrames).astype(np.uint8)
+				sInitial = np.divide(sInitial,numCalibrationFrames).astype(np.uint8)
+				vInitial = np.divide(vInitial,numCalibrationFrames).astype(np.uint8)
 				#print("b Initial after division",bInitial[0][0])
 				#initialColors = np.sqrt(np.add(np.multiply(bInitial,bInitial),np.add(np.multiply(gInitial,gInitial),np.multiply(rInitial,rInitial)))).astype(np.uint8)
 				framesCaptured +=1
+				if averageDepthInMeters > 2:
+					depth_difference_threshold = 9999
+					ignoring_depth = True
+				else:
+					depth_difference_threshold = 25*(averageDepthInMeters**4.5)
+					ignoring_depth = False
+
 				calibrating = False
-
-
 
 				# Show images
 			cv2.imshow(window1Name, calibration_image)
@@ -198,10 +254,28 @@ try:
 		else:
 			depth_image = np.where(depth_image > 0, depth_image,averageDepthFrame)
 			depth_diffs = cv2.subtract(averageDepthFrame,depth_image)
+			v_difference_threshold_darker=cv2.getTrackbarPos('v darker difference threshold', 'controls')
+			v_difference_threshold_lighter=cv2.getTrackbarPos('v lighter difference threshold', 'controls')
+			color_difference_threshold_darker = cv2.getTrackbarPos('RGB darker difference threshold', 'controls')
+			color_difference_threshold_lighter = cv2.getTrackbarPos('RGB lighter difference threshold', 'controls')
+			#if(vDarker!= 0):
+			#else:
+			#	v_difference_threshold_darker = 35
+			#if(vLighter != 0):
+			#else:
+			#	v_difference_threshold_darker = 30
+			#if (hul != -1):
+			#	v_difference_threshold_darker = hul
+			#	print(hul)
+			#else:
+			#	v_difference_threshold_darker = 35
+
+
 
 			#currColors = np.sqrt(np.add(np.multiply(b,b),np.add(np.multiply(g,g),np.multiply(r,r)))).astype(np.uint8)
 			#color_diffs = np.sqrt(np.add(np.square(np.absolute(np.subtract(b,bInitial))),np.add(np.square(np.absolute(np.subtract(g,gInitial))),np.square(np.absolute(np.subtract(r,rInitial))))))
 			#print(color_diffs[0][0])
+			#print("Average Depth:" + str(averageDepthInMeters))
 
 			blue_diffs_lighter = cv2.subtract(b,bInitial)
 			blue_diffs_darker = cv2.subtract(bInitial,b)
@@ -210,12 +284,21 @@ try:
 			red_diffs_lighter = cv2.subtract(r,rInitial)
 			red_diffs_darker = cv2.subtract(rInitial,r)
 
+			hdiffs_lighter = cv2.subtract(h,vInitial)
+			hdiffs_darker = cv2.subtract(hInitial,h)
+
+			sdiffs_lighter = cv2.subtract(s,vInitial)
+			sdiffs_darker = cv2.subtract(sInitial,s)
+
+			vdiffs_lighter = cv2.subtract(v,vInitial)
+			vdiffs_darker = cv2.subtract(vInitial,v)
+
 			#blue_diffs = cv2.absdiff(b,bInitial)
 			#green_diffs = cv2.absdiff(g,gInitial)
 			#red_diffs = cv2.absdiff(r,rInitial)
 
 
-			if test: #this is just debugging info from the first frame
+			#if test: #this is just debugging info from the first frame
 				#print(depth_image[0])
 				#print(len(depth_image[0]))
 				#print(np.max(depth_image))
@@ -223,11 +306,25 @@ try:
 				#print(depth_diffs[0])
 				#print(culled_color_image[0][0])
 				#print(len(color_image)==len(culled_color_image))
-				test = False
+			#	test = False
 
 			#if there is a difference greater
-			depth_difference_threshold = 10 #the minimum difference in depth to care about
-			color_difference_threshold_lighter = 15
+
+
+			 #the minimum difference in depth to care about
+			#print(averageDepthInMeters)
+			#h_difference_threshold = 35
+			#s_difference_threshold = 50
+			h_difference_threshold_darker = 20
+			h_difference_threshold_lighter = 30
+
+			#s_difference_threshold_darker = 1000
+			#s_difference_threshold_lighter = 10
+
+
+			#print(v_difference_threshold_darker)
+			#v_difference_threshold_lighter = 30
+
 			#print(color_difference_threshold_darker)
 			#color_difference_threshold_darker = 130
 			#color_difference_threshold_test = 155
@@ -244,6 +341,21 @@ try:
 			culled_color_image = np.where(green_diffs_lighter > color_difference_threshold_lighter,white_color,culled_color_image)
 			culled_color_image = np.where(red_diffs_lighter > color_difference_threshold_lighter,white_color,culled_color_image)
 
+			culled_color_image = np.where(blue_diffs_darker > color_difference_threshold_darker,white_color,culled_color_image)
+			culled_color_image = np.where(green_diffs_darker > color_difference_threshold_darker,white_color,culled_color_image)
+			culled_color_image = np.where(red_diffs_darker > color_difference_threshold_darker,white_color,culled_color_image)
+
+			#culled_hsv_image = np.where(hdiffs > h_difference_threshold,white_color,black_color)
+			#culled_hsv_image = np.where(sdiffs > s_difference_threshold,white_color,black_color)
+			culled_hsv_image = np.where(vdiffs_lighter > v_difference_threshold_lighter,white_color,black_color)
+			culled_hsv_image = np.where(vdiffs_darker > v_difference_threshold_darker,white_color,culled_hsv_image)
+
+			#culled_hsv_image = np.where(sdiffs_lighter > s_difference_threshold_lighter,white_color,black_color)
+			#culled_hsv_image = np.where(sdiffs_darker > s_difference_threshold_darker,white_color,culled_hsv_image)
+
+
+
+
 			#print("binitial",bInitial[0][0])
 			#print("bcurr",b[0][0])
 
@@ -251,6 +363,9 @@ try:
 			culled_color_image = np.where(green_diffs_darker > color_difference_threshold_darker,white_color,culled_color_image)
 			culled_color_image = np.where(red_diffs_darker > color_difference_threshold_darker,white_color,culled_color_image)
 			#culled_color_image = cv2.blur(culled_color_image,(10,10))
+
+			#combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_OPEN, kernel2)
+			#combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_CLOSE, kernel2)
 
 
 
@@ -266,8 +381,8 @@ try:
 
 			#culled_color_image = np.where(color_diffs > color_difference_threshold_test2,white_color,black_color)
 
-			combined_image = np.where(culled_color_image == white_color,white_color,black_color)
-			combined_image = np.where(binary_depth_image == white_color,white_color,combined_image)
+			#combined_image = np.where(culled_color_image == white_color,white_color,black_color)
+			#combined_image = np.where(binary_depth_image == white_color,white_color,combined_image)
 
 			#combined_diffs = np.add(blue_diffs,np.add(green_diffs,red_diffs))
 
@@ -286,29 +401,43 @@ try:
 
 
 			# Apply colormap on depth image (image must be converted to 8-bit per pixel first)
+			hsv_colormap = cv2.applyColorMap(cv2.convertScaleAbs(culled_hsv_image, alpha=0.03), cv2.COLORMAP_BONE)
 			depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(binary_depth_image, alpha=0.03), cv2.COLORMAP_BONE)
-			image_diff_colormap = cv2.applyColorMap(cv2.convertScaleAbs(culled_color_image, alpha=0.03), cv2.COLORMAP_BONE)
-			combined_colormap = cv2.applyColorMap(cv2.convertScaleAbs(combined_image, alpha=0.03), cv2.COLORMAP_BONE)
-
 			depth_colormap = cv2.morphologyEx(depth_colormap, cv2.MORPH_OPEN, kernel)
 			depth_colormap= cv2.morphologyEx(depth_colormap, cv2.MORPH_CLOSE, kernel)
 
+			image_diff_colormap = cv2.applyColorMap(cv2.convertScaleAbs(culled_color_image, alpha=0.03), cv2.COLORMAP_BONE)
 			#image_diff_colormap = cv2.morphologyEx(image_diff_colormap, cv2.MORPH_OPEN, kernel2)
 			#image_diff_colormap = cv2.morphologyEx(image_diff_colormap, cv2.MORPH_OPEN, kernel2)
-			#image_diff_colormap2= cv2.applyColorMap(cv2.convertScaleAbs(culled_color_image2, alpha=0.03), cv2.COLORMAP_BONE)
+
+			test= np.where(image_diff_colormap > 0,white_color,black_color)
+			test_colormap = cv2.applyColorMap(cv2.convertScaleAbs(test, alpha=0.03), cv2.COLORMAP_BONE)
+
+
+			combined = np.where(image_diff_colormap != 0, white_color,black_color)
+			combined = np.where(depth_colormap != 0,white_color,combined)
+
+
+			combined_colormap = cv2.applyColorMap(cv2.convertScaleAbs(combined, alpha=0.03), cv2.COLORMAP_BONE)
 			combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_OPEN, kernel2)
 			combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_CLOSE, kernel2)
-			combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_OPEN, kernel3)
-			combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_CLOSE, kernel3)
+
+
+
+			#image_diff_colormap2= cv2.applyColorMap(cv2.convertScaleAbs(culled_color_image2, alpha=0.03), cv2.COLORMAP_BONE)
+			#combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_OPEN, kernel2)
+			#combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_CLOSE, kernel2)
+			#combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_OPEN, kernel3)
+			#combined_colormap = cv2.morphologyEx(combined_colormap, cv2.MORPH_CLOSE, kernel3)
 
 
 
 			#ADAPTIVE THRESHOLDING
-			gray = cv2.cvtColor(color_image,cv2.COLOR_BGR2GRAY)
+			#gray = cv2.cvtColor(color_image,cv2.COLOR_BGR2GRAY)
 			#gray2 = cv2.cvtColor(bg_removed,cv2.COLOR_BGR2GRAY)
-			thresh1 = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,13,6);
+			#thresh1 = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,13,6);
 			#thresh2 = cv2.adaptiveThreshold(gray2,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,13,6);
-			thresh3 = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,13,13);
+			#thresh3 = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,13,13);
 			#thresh = np.asanyarray(thresh)
 			#print(color_image)
 
@@ -319,9 +448,14 @@ try:
 
 			# Show images
 			cv2.imshow(window1Name, color_image)
-			cv2.imshow(window2Name,depth_colormap)
+			if ignoring_depth:
+				cv2.imshow(window2Name,ignoring_image)
+			else:
+				cv2.imshow(window2Name,depth_colormap)
 			cv2.imshow(window3Name,image_diff_colormap)
 			cv2.imshow(window4Name,combined_colormap)
+			cv2.imshow(window5Name,hsv_colormap)
+			#cv2.imshow(window6Name,test_colormap)
 			#cv2.imshow('thresh of unculled color image', thresh1)
 			#cv2.imshow('thresh of culled color image', thresh2)
 		#cv2.imshow('higher constant being subtracted', thresh3)
